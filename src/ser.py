@@ -563,7 +563,7 @@ def run_pipeline(
     if methode == "A":
         seg = segmentation_3conditions_target(y_train)
     elif methode == "B":
-        
+        ql, qu = quantiles_B
         seg = segmentation_target_quantiles(y_train)
     elif methode == "C":
         # itérative gauche + droite
@@ -594,6 +594,8 @@ def run_pipeline(
     else:
         raise ValueError("Méthode inconnue. Choix: 'A','B','C','D'.")
     alpha = 0.05 * (seg["up_thr"] - seg["low_thr"])  # zone de transition = 5% de l’intervalle global
+
+    mdl_huber, y_pred_huber = fit_huber_global(X_train, y_train, X_test)
 
     \
 
@@ -661,17 +663,17 @@ def run_pipeline(
     # ==============================
     # 7. MÉTRIQUES
     # ==============================
-    
+    df_naive = metrics_table(y_test, y_pred_naive, "Naïf")
     df_blend = metrics_table(y_test, y_pred_blend, "SER")
-    
+    df_huber = metrics_table(y_test, y_pred_huber, "Huber")
 
-    df_all = pd.concat([ df_blend], ignore_index=True)
+    df_all = pd.concat([df_naive, df_blend,df_huber], ignore_index=True)
 
     if verbose:
         print("\n==============================")
         print(f" Résumé final (test set) - méthode : {methode}")
         print("==============================")
-        print(df_all)
+        print(df_blend)
 
     return {
         "global_model": mdl_global,
