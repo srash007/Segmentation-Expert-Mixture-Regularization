@@ -1,28 +1,49 @@
+"""
+Segmentation Expert-Mixture Regularization (SER)
+
+Implementation of the SER framework proposed in:
+
+Rashiwa, S. E., Branco, P.
+"Segmentation Expert-Mixture Regularization:
+An Adaptive Learning Method for Imbalanced Regression Problems"
+
+CAIAC 2026
+University of Ottawa
+
+Author: Sarah Elyane Rashiwa
+"""
+
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.linear_model import HuberRegressor, QuantileRegressor,PoissonRegressor, Ridge,Lasso
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import (
+    HuberRegressor,
+    QuantileRegressor,
+    PoissonRegressor,
+    Ridge,
+    Lasso
+)
+
 from sklearn.preprocessing import PolynomialFeatures
 
 
 
 # ---------- Utils ----------
 def _to_numpy(x):
-    """Assure np.array (préserve l'ordre du mask)."""
+    """Convert input to NumPy array while preserving order."""
     return x.values if hasattr(x, "values") else np.asarray(x)
 
 def _add_const_df(X):
-    """Ajoute une constante (statsmodels) en gardant DataFrame si possible."""
+    """Add intercept column for statsmodels."""
     if hasattr(X, "assign"):
-        Xc = sm.add_constant(X, has_constant="add")
+        X_center = sm.add_constant(X, has_constant="add")
     else:
-        Xc = sm.add_constant(X, has_constant="add")
-    return Xc
+        X_center = sm.add_constant(X, has_constant="add")
+    return X_center
 
 def _safe_weights(resid, eps=1e-6):
-    """Poids WLS = 1 / (resid^2 + eps) pour éviter les divisions par zéro."""
+    """Safe WLS weights."""
     r = _to_numpy(resid)
     return 1.0 / (r**2 + eps)
 
@@ -30,158 +51,171 @@ def metrics_table(y_true, y_pred, label):
     y_true = _to_numpy(y_true)
     y_pred = _to_numpy(y_pred)
     return pd.DataFrame([{
-        "Modèle": label,
+        "Model": label,
         "R2": r2_score(y_true, y_pred),
         "MAE": mean_absolute_error(y_true, y_pred),
         "RMSE": np.sqrt(mean_squared_error(y_true, y_pred))
     }])
 
-def mad(x):
+def mad(x: np.ndarray) -> float:
     med = np.median(x)
     return 1.4826 * np.median(np.abs(x - med))
 
-#----------Models--------
-def fit_ols(Xg, yg, cov_type="HC3"):
-    Xc = _add_const_df(Xg)
-    mdl = sm.OLS(yg, Xc).fit(cov_type=cov_type)
-    yhat = mdl.predict(Xc)
-    return {"model": mdl, "y_pred": _to_numpy(yhat), "name": "OLS"}
-def fit_wls(Xg, yg, resid_from_ols, cov_type="HC3"):
-    Xc = _add_const_df(Xg)
+# ==========================================================
+# Model Fitting Functions
+# ==========================================================
+def fit_ols(X_group: pd.DataFrame, y_group: pd.Series, cov_type="HC3") -> dict:
+    X_center = _add_const_df(X_group)
+    model = sm.OLS(y_group, X_center).fit(cov_type=cov_type)
+    yhat = model.predict(X_center)
+    return {"model": model, "y_pred": _to_numpy(yhat), "name": "OLS"}
+def fit_wls(X_group, y_group, resid_from_ols, cov_type="HC3"):
+    X_center = _add_const_df(X_group)
     w = _safe_weights(resid_from_ols)
-    mdl = sm.WLS(yg, Xc, weights=w).fit(cov_type=cov_type)
-    yhat = mdl.predict(Xc)
-    return {"model": mdl, "y_pred": _to_numpy(yhat), "name": "WLS"}
+    model = sm.WLS(y_group, X_center, weights=w).fit(cov_type=cov_type)
+    yhat = model.predict(X_center)
+    return {"model": model, "y_pred": _to_numpy(yhat), "name": "WLS"}
 
 
-def fit_polynomial(Xg, yg, degree=2):
+def fit_polynomial(X_group, y_group, degree=2):
     poly = PolynomialFeatures(degree=degree)
-    Xg_poly = poly.fit_transform(Xg)
-    mdl = sm.OLS(yg, Xg_poly).fit()
-    yhat = mdl.predict(Xg_poly)
-    return {"model": mdl, "y_pred": _to_numpy(yhat), "name": f"Poly ({degree})"}
+    Xg_poly = poly.fit_transform(X_group)
+    model = sm.OLS(y_group, Xg_poly).fit()
+    yhat = model.predict(Xg_poly)
+    return {"model": model, "y_pred": _to_numpy(yhat), "name": f"Poly ({degree})"}
 
-def fit_huber(Xg, yg, epsilon=1.35, alpha=0.0):
+def fit_huber(X_group, y_group, epsilon=1.35, alpha=0.0):
     huber = HuberRegressor(epsilon=epsilon, alpha=alpha)
-    huber.fit(_to_numpy(Xg), _to_numpy(yg))
-    yhat = huber.predict(_to_numpy(Xg))
+    huber.fit(_to_numpy(X_group), _to_numpy(y_group))
+    yhat = huber.predict(_to_numpy(X_group))
     return {"model": huber, "y_pred": _to_numpy(yhat), "name": "Huber"}
-def fit_poisson(Xg, yg):
+def fit_poisson(X_group, y_group):
     poisson = PoissonRegressor()
-    poisson.fit(_to_numpy(Xg), _to_numpy(yg))
-    yhat = poisson.predict(_to_numpy(Xg))
+    poisson.fit(_to_numpy(X_group), _to_numpy(y_group))
+    yhat = poisson.predict(_to_numpy(X_group))
     return {"model": poisson, "y_pred": _to_numpy(yhat), "name": "Poisson"}
-def ridge(Xg, yg, alpha=1.0):
+def ridge(X_group, y_group, alpha=1.0):
     ridge = Ridge(alpha=alpha)
-    ridge.fit(_to_numpy(Xg), _to_numpy(yg))
-    yhat = ridge.predict(_to_numpy(Xg))
+    ridge.fit(_to_numpy(X_group), _to_numpy(y_group))
+    yhat = ridge.predict(_to_numpy(X_group))
     return {"model": ridge, "y_pred": _to_numpy(yhat), "name": "Ridge"}
-def lasso(Xg, yg, alpha=1.0):
+def lasso(X_group, y_group, alpha=1.0):
     lasso = Lasso(alpha=alpha)
-    lasso.fit(_to_numpy(Xg), _to_numpy(yg))
-    yhat = lasso.predict(_to_numpy(Xg))
+    lasso.fit(_to_numpy(X_group), _to_numpy(y_group))
+    yhat = lasso.predict(_to_numpy(X_group))
     return {"model": lasso, "y_pred": _to_numpy(yhat), "name": "Lasso"}
 
-def fit_quantile(Xg, yg, tau=0.10, alpha=0.0):
+def fit_quantile(X_group, y_group, tau=0.10, alpha=0.0):
     qr = QuantileRegressor(quantile=tau, alpha=alpha, solver="highs")
-    qr.fit(_to_numpy(Xg), _to_numpy(yg))
-    yhat = qr.predict(_to_numpy(Xg))
+    qr.fit(_to_numpy(X_group), _to_numpy(y_group))
+    yhat = qr.predict(_to_numpy(X_group))
     return {"model": qr, "y_pred": _to_numpy(yhat), "name": f"Quantile(τ={tau})"}
-def predict_with_model(mdl, X_row, mdl_name):
+def predict_with_model(model, X_row, mdl_name):
     """
-    Fonction universelle pour prédire avec n’importe quel type de modèle.
-    Elle ajuste automatiquement la structure de X_row selon le modèle :
-      - StatsModels (OLS, GLM, WLS)
-      - Scikit-learn (Huber, Poisson, Quantile)
-      - Polynomiaux (Poly(n))
+    Generic prediction function supporting:
+    - StatsModels estimators
+    - Scikit-learn estimators
+    - Polynomial regression models
     """
 
-    # 🔹 Cas 1 — Modèle polynômial : "Poly (2)"
+    # Case 1 — Polynomial models
+
     if "Poly" in mdl_name:
         try:
             degree = int(mdl_name.split("(")[1].split(")")[0])
-        except:
-            degree = 2  # Valeur par défaut
+        except Exception:
+            degree = 2  # Default fallback value
         poly = PolynomialFeatures(degree=degree)
         X_poly = poly.fit_transform(X_row)
-        return mdl.predict(X_poly)[0]
+        return model.predict(X_poly)[0]
+    
+   
+    # Case 2 — Scikit-learn models
 
-    # 🔹 Cas 2 — Modèles Scikit-Learn (Huber, Poisson, Quantile)
-    elif hasattr(mdl, "coef_"):
-        return mdl.predict(X_row.to_numpy())[0]
+    elif hasattr(model, "coef_"):
+        return model.predict(X_row.to_numpy())[0]
 
-    # 🔹 Cas 3 — Modèles StatsModels (OLS, WLS, GLM)
-    elif hasattr(mdl, "predict"):
-        Xc = sm.add_constant(X_row, has_constant="add")
-        return mdl.predict(Xc)[0]
+    # Case 3 — StatsModels models
+    elif hasattr(model, "predict"):
+        X_center = sm.add_constant(X_row, has_constant="add")
+        return model.predict(X_center)[0]
 
 
-    # 🔹 Cas inconnu
+    # Case unknown
     else:
-        raise ValueError(f"Type de modèle non reconnu : {type(mdl)}")
+        raise ValueError(f"Unknown model type : {type(model)}")
 
 
 def fit_group_all_models(
-    Xg,
-    yg,
+    X_group,
+    y_group,
     resid_from_ols=None,
     quantile_tau=0.5,
     verbose=False
 ):
     """
-    Entraîne plusieurs modèles sur un groupe (Lower / Center / Upper)
-    et sélectionne le meilleur selon le R².
+    Train multiple regression models on a target segment
+    and select the best-performing model according to R².
 
-    Retourne :
-      - best_model : dict {"name", "model", "R2", "MAE", "RMSE"}
-      - df_perf    : DataFrame avec les perfs de tous les candidats
+    Returns
+    -------
+    best_model : dict
+        Dictionary containing:
+        - model name
+        - fitted estimator
+        - R²
+        - MAE
+        - RMSE
+
+    df_perf : pandas.DataFrame
+        Performance table for all candidate models.
     """
     # Sécurisation des formats
-    Xg = pd.DataFrame(Xg).copy()
-    Xg.index = range(len(Xg))
-    yg = pd.Series(yg).copy()
-    yg.index = range(len(yg))
+    X_group = pd.DataFrame(X_group).copy()
+    X_group.index = range(len(X_group))
+    y_group = pd.Series(y_group).copy()
+    y_group.index = range(len(y_group))
 
     candidates = []
 
     # 1) OLS
-    m_ols = fit_ols(Xg, yg)
+    m_ols = fit_ols(X_group, y_group)
     candidates.append(m_ols)
 
     # 2) WLS (si résidus fournis)
     if resid_from_ols is not None:
         try:
-            m_wls = fit_wls(Xg, yg, resid_from_ols)
+            m_wls = fit_wls(X_group, y_group, resid_from_ols)
             candidates.append(m_wls)
         except Exception:
-            # on ignore silencieusement si WLS plante
+            # Ignore WLS failure silently
             pass
 
 
 
     # 4) Polynômial (degré 2)
-    candidates.append(fit_polynomial(Xg, yg, degree=2))
+    candidates.append(fit_polynomial(X_group, y_group, degree=2))
 
 
     # 5) Huber
-    candidates.append(fit_huber(Xg, yg))
+    candidates.append(fit_huber(X_group, y_group))
 
     # 6) Poisson
     try:
-        candidates.append(fit_poisson(Xg, yg))
+        candidates.append(fit_poisson(X_group, y_group))
     except Exception:
         pass
 
     # 7) Quantile
-    candidates.append(fit_quantile(Xg, yg, tau=quantile_tau))
+    candidates.append(fit_quantile(X_group, y_group, tau=quantile_tau))
     # 8) Ridge
-    candidates.append(ridge(Xg, yg))
+    candidates.append(ridge(X_group, y_group))
     #9)Lasso
-    candidates.append(lasso(Xg, yg))
+    candidates.append(lasso(X_group, y_group))
 
     # Évaluation de tous les modèles
     results = []
-    y_true = _to_numpy(yg)
+    y_true = _to_numpy(y_group)
     for c in candidates:
         y_pred = c["y_pred"]
         results.append({
@@ -204,29 +238,27 @@ def fit_group_all_models(
     }
 
 
-    #print(f"Le meilleur modèle est : {best_model['name']}")
+    
     return best_model, df_perf
 
 
-def safe_fit_group(Xg, yg, label, tau, resid_from_ols=None, min_n=10, verbose=False):
+def safe_fit_group(X_group, y_group, label, tau, resid_from_ols=None, min_n=10, verbose=False):
     """
-    Enveloppe de sécurité :
-      - ignore le groupe s'il est trop petit
-      - appelle fit_group_all_models
-    Retourne (best_model, df_perf) ou (None, None).
+    Safety wrapper for group fitting.
+
+    Groups smaller than `min_n` are ignored.
     """
-    n = 0 if Xg is None else len(Xg)
-    if Xg is None or n < min_n:
+    n = 0 if X_group is None else len(X_group)
+    if X_group is None or n < min_n:
         if verbose:
-            print(f"Groupe {label} ignoré (n={n})")
+            print(f"Groupe {label} ignored (n={n})")
         return None, None
 
-    #if verbose:
-        #print(f"\n🔹 Entraînement du groupe {label} (n={n})")
+
 
     best_model, perf_df = fit_group_all_models(
-        Xg,
-        yg,
+        X_group,
+        y_group,
         resid_from_ols=resid_from_ols,
         quantile_tau=tau,
         verbose=verbose
@@ -239,22 +271,22 @@ def fit_huber_global(X_train, y_train, X_test):
     y_pred = huber.predict(X_test.to_numpy())
     return huber, y_pred
 
-def fit_random_forest(X_train, y_train, X_test):
-    rf = RandomForestRegressor(n_estimators=100, random_state=42)
-    rf.fit(X_train.to_numpy(), y_train.to_numpy())
-    y_pred = rf.predict(X_test.to_numpy())
-    return rf, y_pred
 
-#-------segmentation -------
+
+# ==========================================================
+# Segmentation Methods
+# ==========================================================
 def tail_mean_check(res, mask_tail, mask_center, alpha=0.15):
-    """Vrai si la queue a une moyenne d'erreur distincte du centre."""
+    """Return True if the tail region has a significantly different mean compared to the center region. """
     eps = 1e-12
     mu_tail   = res[mask_tail].mean() if mask_tail.any() else 0.0
     mu_center = res[mask_center].mean() if mask_center.any() else 0.0
     return abs(mu_tail - mu_center) > alpha * (res.std() + eps)
 
 def split_by_target_thresholds(y, low_thr, up_thr):
-    """Découpe y en 3 groupes selon seuils bas / haut."""
+    """
+    Split target values into lower, center, and upper regions.
+    """
     y = np.asarray(y)
     mask_lower  = y <  low_thr
     mask_center = (y >= low_thr) & (y <= up_thr)
@@ -270,9 +302,10 @@ def split_by_target_thresholds(y, low_thr, up_thr):
 
 def segmentation_3conditions_target(y, k_tau=1.5, alpha_tail=0.15):
     """
-    Segmentation de la variable cible y en 3 groupes :
-    - centre : valeurs proches de la médiane (selon MAD)
-    - queue gauche / droite : extrêmes significatifs
+    Segment the target variable into three regions:
+    - center region around the median (MAD-based)
+    - lower tail
+    - upper tail
     """
     y = np.asarray(y)
     med = np.median(y)
@@ -316,9 +349,10 @@ def segmentation_target_quantiles(y, q_low=0.10, q_up=0.90):
 
 def methode_iterative_retrait_target(X, y, cote='gauche', pas=50, stop_delta=1e-3):
     """
-    Version basée sur la variable cible (rej), pas les résidus.
-    Retire progressivement les valeurs extrêmes de y (rej) à gauche ou à droite.
-    Renvoie la borne optimale (low_thr ou up_thr) qui maximise R².
+    Iterative trimming segmentation based on the target variable.
+
+    Progressively removes extreme target values from the lower
+    or upper tail and searches for the optimal segmentation threshold.
     """
     y_arr = np.asarray(y)
     order = np.argsort(y_arr)  # indices triés par valeur de y
@@ -397,12 +431,12 @@ def optimise_biais_variance_target(
                 continue
 
             # 4. Sous-ensemble central
-            Xc = X.iloc[idxC] if hasattr(X, 'iloc') else X[idxC]
-            yc = y.iloc[idxC] if hasattr(y, 'iloc') else y[idxC]
+            X_center = X.iloc[idxC] if hasattr(X, 'iloc') else X[idxC]
+            y_center = y.iloc[idxC] if hasattr(y, 'iloc') else y[idxC]
 
             # 5. Modèle linéaire sur le centre
-            mdl = sm.OLS(yc, sm.add_constant(Xc)).fit()
-            res_c = mdl.resid
+            model = sm.OLS(y_center, sm.add_constant(X_center)).fit()
+            res_c = model.resid
 
             # 6. Calcul des métriques biais–variance
             var_c = np.var(res_c)
@@ -421,7 +455,7 @@ def optimise_biais_variance_target(
                 "nL": len(idxL),
                 "nC": len(idxC),
                 "nU": len(idxU),
-                "r2C": mdl.rsquared,
+                "r2C": model.rsquared,
                 "vb": score_vb,
                 "bal": bal,
                 "score": score_final
@@ -436,32 +470,9 @@ def optimise_biais_variance_target(
 
     return best, df
 
-def summarize_center_target(name, y, mask_center):
-    """
-    Résumé du centre basé sur la distribution de la cible (pas de résidus).
-    """
-    yC = np.asarray(y)[mask_center]
-    if yC.size == 0:
-        return {
-            "Méthode": name,
-            "Taille_centre": 0,
-            "Variance": np.nan,
-            "Écart_type": np.nan,
-            "MAD": np.nan,
-            "Min": np.nan,
-            "Max": np.nan
-        }
-
-    return {
-        "Méthode": name,
-        "Taille_centre": int(yC.size),
-        "Variance": float(np.var(yC)),
-        "Écart_type": float(np.std(yC)),
-        "MAD": float(1.4826 * np.median(np.abs(yC - np.median(yC)))),
-        "Min": float(np.min(yC)),
-        "Max": float(np.max(yC))
-    }
-
+# ==========================================================
+# Blending and Inference
+# ==========================================================
 
 
 def blended_predict_full_noleak(X_test, global_model, seg_thr, group_models, alpha):
@@ -481,30 +492,30 @@ def blended_predict_full_noleak(X_test, global_model, seg_thr, group_models, alp
     mdl_U_info = group_models["Upper"] if group_models["Upper"] else mdl_C_info
 
     y_preds = []
-    for i, yg in enumerate(y_hat_global):
+    for i, y_group in enumerate(y_hat_global):
         x_i = X_test.iloc[i:i+1]
         try:
             # 1) Zone Lower pure
-            if yg < low_thr - alpha:
+            if y_group < low_thr - alpha:
                 pred = predict_with_model(mdl_L_info["model"], x_i, mdl_L_info["name"])
 
             # 2) Transition Lower–Center
-            elif low_thr - alpha <= yg <= low_thr + alpha:
-                w = (low_thr + alpha - yg) / (2 * alpha)
+            elif low_thr - alpha <= y_group <= low_thr + alpha:
+                w = (low_thr + alpha - y_group) / (2 * alpha)
                 yL = predict_with_model(mdl_L_info["model"], x_i, mdl_L_info["name"])
-                yC = predict_with_model(mdl_C_info["model"], x_i, mdl_C_info["name"])
-                pred = w * yL + (1 - w) * yC
+                y_center = predict_with_model(mdl_C_info["model"], x_i, mdl_C_info["name"])
+                pred = w * yL + (1 - w) * y_center
 
             # 3) Zone Center pure
-            elif low_thr + alpha < yg < up_thr - alpha:
+            elif low_thr + alpha < y_group < up_thr - alpha:
                 pred = predict_with_model(mdl_C_info["model"], x_i, mdl_C_info["name"])
 
             # 4) Transition Center–Upper
-            elif up_thr - alpha <= yg <= up_thr + alpha:
-                w = (up_thr + alpha - yg) / (2 * alpha)
-                yC = predict_with_model(mdl_C_info["model"], x_i, mdl_C_info["name"])
+            elif up_thr - alpha <= y_group <= up_thr + alpha:
+                w = (up_thr + alpha - y_group) / (2 * alpha)
+                y_center = predict_with_model(mdl_C_info["model"], x_i, mdl_C_info["name"])
                 yU = predict_with_model(mdl_U_info["model"], x_i, mdl_U_info["name"])
-                pred = w * yC + (1 - w) * yU
+                pred = w * y_center + (1 - w) * yU
 
             # 5) Zone Upper pure
             else:
@@ -517,31 +528,41 @@ def blended_predict_full_noleak(X_test, global_model, seg_thr, group_models, alp
         y_preds.append(pred)
 
     return np.array(y_preds)
+
+# ==========================================================
+# SER Pipeline
+# ==========================================================
+
 def run_pipeline(
     X_train, y_train,
     X_test,  y_test,
-    methode,
-    quantiles_B=(0.15, 0.85),
+    method,
+    quantile_bounds=(0.15, 0.85),
+    alpha_ratio = 0.05,
     verbose=True
 ):
     """
-    Pipeline complet :
-      - split train/test
-      - modèle global OLS
-      - segmentation selon A/B/C/D
-      - fit des experts lower/center/upper
-      - prédiction blendée (continuous α-blending)
-      - renvoie résumé + métriques
+    Run the complete SER pipeline:
+    1. Train global baseline model
+    2. Apply target-space segmentation
+    3. Train local experts
+    4. Perform alpha-blended prediction
+    5. Evaluate predictive performance
 
-    methode = "A", "B", "C", "D"
-    alpha = largeur des zones de transition
+    Parameters
+    ----------
+    method : str
+    Segmentation strategy:
+    A = MAD-based
+    B = Quantile-based
+    C = Iterative trimming
+    D = Bias-variance optimization
     """
-
 
 
     if verbose:
         print(f"\n==============================")
-        print(f" PIPELINE – méthode {methode}")
+        print(f" PIPELINE – method {method}")
         print(f"==============================")
         print(f"Train: {len(X_train)}, Test: {len(X_test)}\n")
 
@@ -560,12 +581,12 @@ def run_pipeline(
     # ==============================
     # 3. SEGMENTATION
     # ==============================
-    if methode == "A":
+    if method == "A":
         seg = segmentation_3conditions_target(y_train)
-    elif methode == "B":
-        ql, qu = quantiles_B
+    elif method == "B":
+        ql, qu = quantile_bounds
         seg = segmentation_target_quantiles(y_train)
-    elif methode == "C":
+    elif method == "C":
         # itérative gauche + droite
         left  = methode_iterative_retrait_target(X_train, y_train, cote="gauche")
         right = methode_iterative_retrait_target(X_train, y_train, cote="droite")
@@ -581,7 +602,7 @@ def run_pipeline(
             "idxC": split_by_target_thresholds(y_train, low_thr, up_thr)[2],
             "idxU": split_by_target_thresholds(y_train, low_thr, up_thr)[3]
         }
-    elif methode == "D":
+    elif method == "D":
         best, _ = optimise_biais_variance_target(X_train, y_train)
         seg = {
             "low_thr": best["low_thr"],
@@ -592,12 +613,10 @@ def run_pipeline(
             "idxU": split_by_target_thresholds(y_train, best["low_thr"], best["up_thr"])[3]
         }
     else:
-        raise ValueError("Méthode inconnue. Choix: 'A','B','C','D'.")
-    alpha = 0.05 * (seg["up_thr"] - seg["low_thr"])  # zone de transition = 5% de l’intervalle global
+        raise ValueError("method inconnue. Choix: 'A','B','C','D'.")
+    alpha = alpha_ratio* (seg["up_thr"] - seg["low_thr"])  # zone de transition = 5% de l’intervalle global
 
-    mdl_huber, y_pred_huber = fit_huber_global(X_train, y_train, X_test)
-
-    \
+    
 
 
     # ==============================
@@ -632,9 +651,9 @@ def run_pipeline(
     best_U, perf_U = safe_fit_group(X_U, y_U, "Upper",  tau=0.90, resid_from_ols=resid_U, verbose=verbose)
 
     group_models = {
-        "Lower":  best_L,
+        "Lower": best_L,
         "Center": best_C,
-        "Upper":  best_U
+        "Upper": best_U
     }
 
     # Collect group performance dataframes
@@ -663,15 +682,15 @@ def run_pipeline(
     # ==============================
     # 7. MÉTRIQUES
     # ==============================
-    df_naive = metrics_table(y_test, y_pred_naive, "Naïf")
+    
     df_blend = metrics_table(y_test, y_pred_blend, "SER")
-    df_huber = metrics_table(y_test, y_pred_huber, "Huber")
+   
 
-    df_all = pd.concat([df_naive, df_blend,df_huber], ignore_index=True)
+    
 
     if verbose:
         print("\n==============================")
-        print(f" Résumé final (test set) - méthode : {methode}")
+        print(f" Final prediction (test set) - method : {method}")
         print("==============================")
         print(df_blend)
 
@@ -681,7 +700,7 @@ def run_pipeline(
         "group_models": group_models,
         "pred_naive": y_pred_naive,
         "pred_blend": y_pred_blend,
-        "metrics": df_all,
+        "metrics": df_blend,
         "group_perf_dfs": group_perf_dfs, # Added this line
         "X_train": X_train,
         "X_test": X_test,
