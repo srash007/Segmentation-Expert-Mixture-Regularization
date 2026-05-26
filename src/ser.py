@@ -1,27 +1,20 @@
-# -*- coding: utf-8 -*-
-"""
-SER implementation module.
-
-This file contains the core implementation of the Segmentation Expert-Mixture Regularization (SER) algorithm, including utility functions, regression experts, target-space segmentation strategies, alpha-blending prediction, and the main pipeline.
-"""
-
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
-
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.linear_model import LinearRegression, HuberRegressor, QuantileRegressor,PoissonRegressor, Ridge,Lasso
-
+from sklearn.linear_model import HuberRegressor, QuantileRegressor,PoissonRegressor, Ridge,Lasso
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import PolynomialFeatures
-from sklearn.model_selection import train_test_split
 
-# ---------- Utilities ----------
+
+
+# ---------- Utils ----------
 def _to_numpy(x):
-    """Ensures the input is converted to a NumPy array while preserving mask order."""
+    """Assure np.array (préserve l'ordre du mask)."""
     return x.values if hasattr(x, "values") else np.asarray(x)
 
 def _add_const_df(X):
-    """Adds a statsmodels constant while preserving the DataFrame format when possible."""
+    """Ajoute une constante (statsmodels) en gardant DataFrame si possible."""
     if hasattr(X, "assign"):
         Xc = sm.add_constant(X, has_constant="add")
     else:
@@ -29,7 +22,7 @@ def _add_const_df(X):
     return Xc
 
 def _safe_weights(resid, eps=1e-6):
-    """Computes WLS weights as 1 / (resid^2 + eps) to avoid division by zero."""
+    """Poids WLS = 1 / (resid^2 + eps) pour éviter les divisions par zéro."""
     r = _to_numpy(resid)
     return 1.0 / (r**2 + eps)
 
@@ -96,34 +89,34 @@ def fit_quantile(Xg, yg, tau=0.10, alpha=0.0):
     return {"model": qr, "y_pred": _to_numpy(yhat), "name": f"Quantile(τ={tau})"}
 def predict_with_model(mdl, X_row, mdl_name):
     """
-    Universal prediction function for different model types.
-    It automatically adapts the structure of X_row depending on the model:
+    Fonction universelle pour prédire avec n’importe quel type de modèle.
+    Elle ajuste automatiquement la structure de X_row selon le modèle :
       - StatsModels (OLS, GLM, WLS)
       - Scikit-learn (Huber, Poisson, Quantile)
-      - Polynomial models (Poly(n))
+      - Polynomiaux (Poly(n))
     """
 
-    # Case 1 — Polynomial model: "Poly (2)"
+    # 🔹 Cas 1 — Modèle polynômial : "Poly (2)"
     if "Poly" in mdl_name:
         try:
             degree = int(mdl_name.split("(")[1].split(")")[0])
         except:
-            degree = 2  # Default value
+            degree = 2  # Valeur par défaut
         poly = PolynomialFeatures(degree=degree)
         X_poly = poly.fit_transform(X_row)
         return mdl.predict(X_poly)[0]
 
-    # Case 2 — Scikit-learn models (Huber, Poisson, Quantile)
+    # 🔹 Cas 2 — Modèles Scikit-Learn (Huber, Poisson, Quantile)
     elif hasattr(mdl, "coef_"):
         return mdl.predict(X_row.to_numpy())[0]
 
-    # Case 3 — StatsModels models (OLS, WLS, GLM)
+    # 🔹 Cas 3 — Modèles StatsModels (OLS, WLS, GLM)
     elif hasattr(mdl, "predict"):
         Xc = sm.add_constant(X_row, has_constant="add")
         return mdl.predict(Xc)[0]
 
 
-    # Unknown model type
+    # 🔹 Cas inconnu
     else:
         raise ValueError(f"Type de modèle non reconnu : {type(mdl)}")
 
@@ -136,14 +129,14 @@ def fit_group_all_models(
     verbose=False
 ):
     """
-    Trains several candidate models on one region (Lower / Center / Upper)
-    and selects the best one according to R².
+    Entraîne plusieurs modèles sur un groupe (Lower / Center / Upper)
+    et sélectionne le meilleur selon le R².
 
-    Returns:
-      - best_model: dict {"name", "model", "R2", "MAE", "RMSE"}
-      - df_perf: DataFrame containing the performance of all candidate models
+    Retourne :
+      - best_model : dict {"name", "model", "R2", "MAE", "RMSE"}
+      - df_perf    : DataFrame avec les perfs de tous les candidats
     """
-    # Format standardization
+    # Sécurisation des formats
     Xg = pd.DataFrame(Xg).copy()
     Xg.index = range(len(Xg))
     yg = pd.Series(yg).copy()
@@ -155,18 +148,18 @@ def fit_group_all_models(
     m_ols = fit_ols(Xg, yg)
     candidates.append(m_ols)
 
-    # 2) WLS if residuals are provided
+    # 2) WLS (si résidus fournis)
     if resid_from_ols is not None:
         try:
             m_wls = fit_wls(Xg, yg, resid_from_ols)
             candidates.append(m_wls)
         except Exception:
-            # Silently ignore WLS if it fails
+            # on ignore silencieusement si WLS plante
             pass
 
 
 
-    # 4) Polynomial model (degree 2)
+    # 4) Polynômial (degré 2)
     candidates.append(fit_polynomial(Xg, yg, degree=2))
 
 
@@ -183,10 +176,10 @@ def fit_group_all_models(
     candidates.append(fit_quantile(Xg, yg, tau=quantile_tau))
     # 8) Ridge
     candidates.append(ridge(Xg, yg))
-    # 9) Lasso
+    #9)Lasso
     candidates.append(lasso(Xg, yg))
 
-    # Evaluate all candidate models
+    # Évaluation de tous les modèles
     results = []
     y_true = _to_numpy(yg)
     for c in candidates:
@@ -211,25 +204,25 @@ def fit_group_all_models(
     }
 
 
-    #print(f"The best model is: {best_model['name']}")
+    #print(f"Le meilleur modèle est : {best_model['name']}")
     return best_model, df_perf
 
 
 def safe_fit_group(Xg, yg, label, tau, resid_from_ols=None, min_n=10, verbose=False):
     """
-    Safety wrapper:
-      - ignores the region if it is too small
-      - calls fit_group_all_models
-    Returns (best_model, df_perf) or (None, None).
+    Enveloppe de sécurité :
+      - ignore le groupe s'il est trop petit
+      - appelle fit_group_all_models
+    Retourne (best_model, df_perf) ou (None, None).
     """
     n = 0 if Xg is None else len(Xg)
     if Xg is None or n < min_n:
         if verbose:
-            print(f"Region {label} ignored (n={n})")
+            print(f"Groupe {label} ignoré (n={n})")
         return None, None
 
     #if verbose:
-        #print(f"\nTraining region {label} (n={n})")
+        #print(f"\n🔹 Entraînement du groupe {label} (n={n})")
 
     best_model, perf_df = fit_group_all_models(
         Xg,
@@ -246,17 +239,22 @@ def fit_huber_global(X_train, y_train, X_test):
     y_pred = huber.predict(X_test.to_numpy())
     return huber, y_pred
 
+def fit_random_forest(X_train, y_train, X_test):
+    rf = RandomForestRegressor(n_estimators=100, random_state=42)
+    rf.fit(X_train.to_numpy(), y_train.to_numpy())
+    y_pred = rf.predict(X_test.to_numpy())
+    return rf, y_pred
 
-#-------Segmentation -------
+#-------segmentation -------
 def tail_mean_check(res, mask_tail, mask_center, alpha=0.15):
-    """Returns True if the tail has a mean error distinct from the center."""
+    """Vrai si la queue a une moyenne d'erreur distincte du centre."""
     eps = 1e-12
     mu_tail   = res[mask_tail].mean() if mask_tail.any() else 0.0
     mu_center = res[mask_center].mean() if mask_center.any() else 0.0
     return abs(mu_tail - mu_center) > alpha * (res.std() + eps)
 
 def split_by_target_thresholds(y, low_thr, up_thr):
-    """Splits y into three groups according to lower and upper thresholds."""
+    """Découpe y en 3 groupes selon seuils bas / haut."""
     y = np.asarray(y)
     mask_lower  = y <  low_thr
     mask_center = (y >= low_thr) & (y <= up_thr)
@@ -272,9 +270,9 @@ def split_by_target_thresholds(y, low_thr, up_thr):
 
 def segmentation_3conditions_target(y, k_tau=1.5, alpha_tail=0.15):
     """
-    Segments the target variable y into three groups:
-    - center: values close to the median according to MAD
-    - lower / upper tails: significant extreme values
+    Segmentation de la variable cible y en 3 groupes :
+    - centre : valeurs proches de la médiane (selon MAD)
+    - queue gauche / droite : extrêmes significatifs
     """
     y = np.asarray(y)
     med = np.median(y)
@@ -283,10 +281,10 @@ def segmentation_3conditions_target(y, k_tau=1.5, alpha_tail=0.15):
     low_thr = med - tau_c
     up_thr  = med + tau_c
 
-    # Create the groups
+    # Création des groupes
     groups, idxL, idxC, idxU = split_by_target_thresholds(y, low_thr, up_thr)
 
-    # Test mean difference between each tail and the center
+    # Test de différence moyenne queue vs centre
     keepL = tail_mean_check(y, np.isin(np.arange(len(y)), idxL), np.isin(np.arange(len(y)), idxC), alpha=alpha_tail)
     keepU = tail_mean_check(y, np.isin(np.arange(len(y)), idxU), np.isin(np.arange(len(y)), idxC), alpha=alpha_tail)
 
@@ -318,12 +316,12 @@ def segmentation_target_quantiles(y, q_low=0.10, q_up=0.90):
 
 def methode_iterative_retrait_target(X, y, cote='gauche', pas=50, stop_delta=1e-3):
     """
-    Version based on the target variable, not on residuals.
-    Progressively removes extreme target values from the lower or upper side.
-    Returns the optimal boundary (low_thr or up_thr) that maximizes R².
+    Version basée sur la variable cible (rej), pas les résidus.
+    Retire progressivement les valeurs extrêmes de y (rej) à gauche ou à droite.
+    Renvoie la borne optimale (low_thr ou up_thr) qui maximise R².
     """
     y_arr = np.asarray(y)
-    order = np.argsort(y_arr)  # indices sorted by target value
+    order = np.argsort(y_arr)  # indices triés par valeur de y
     perf = []
     n = len(y_arr)
     best = None
@@ -335,15 +333,15 @@ def methode_iterative_retrait_target(X, y, cote='gauche', pas=50, stop_delta=1e-
 
     for i in iterator:
         if cote == 'gauche':
-            kept = order[i:]  # Removes the i smallest target values
+            kept = order[i:]  # Retire les i plus petites valeurs de y
             bound = y_arr[order[i]] if i < len(order) else y_arr.min()
         else:
-            kept = order[:len(order) - i]  # Removes the i largest target values
+            kept = order[:len(order) - i]  # Retire les i plus grandes valeurs de y
             j = len(order) - i - 1
             bound = y_arr[order[j]] if j >= 0 else y_arr.max()
 
         if len(kept) <= X.shape[1] + 1:
-            break  # Too few observations to train a model
+            break  # Trop peu de données pour entraîner un modèle
 
         Xs = X.iloc[kept] if hasattr(X, 'iloc') else X[kept]
         ys = y.iloc[kept] if hasattr(y, 'iloc') else y[kept]
@@ -351,12 +349,12 @@ def methode_iterative_retrait_target(X, y, cote='gauche', pas=50, stop_delta=1e-
 
         perf.append((i, model.rsquared, np.mean(np.abs(model.resid)), bound))
 
-        # Stopping criterion: weak improvement
+        # Critère d'arrêt : amélioration faible
         if len(perf) > 1 and abs(perf[-1][1] - perf[-2][1]) < stop_delta:
             best = perf[-1]
             break
 
-    # Final selection if no convergence based on delta
+    # Sélection finale si aucune convergence par delta
     if not best and perf:
         best = max(perf, key=lambda t: t[1])
     if not best:
@@ -374,10 +372,10 @@ def optimise_biais_variance_target(
     q_up_grid=np.linspace(0.70, 0.95, 12)
 ):
     """
-    Optimizes the segmentation boundaries of the target variable y
-    using a bias-variance criterion in the central segment.
-    Searches for low_thr / up_thr values that produce a stable,
-    homogeneous center balanced with the tails.
+    Optimise les bornes de segmentation de la variable cible y
+    selon un critère biais–variance dans le segment central.
+    Cherche les seuils low_thr / up_thr qui donnent un centre
+    stable, homogène, et équilibré avec les queues.
     """
     y_arr = np.asarray(y)
     rows = []
@@ -387,31 +385,31 @@ def optimise_biais_variance_target(
             if ql >= qu:
                 continue
 
-            # 1. Quantile thresholds on y
+            # 1. Seuils en quantiles sur y
             low_thr = np.quantile(y_arr, ql)
             up_thr  = np.quantile(y_arr, qu)
 
-            # 2. Split into groups according to the target
+            # 2. Découpage en groupes selon la cible
             _, idxL, idxC, idxU = split_by_target_thresholds(y_arr, low_thr, up_thr)
 
-            # 3. Require a minimum number of observations in each group
+            # 3. On exige un minimum d'observations dans chaque groupe
             if len(idxC) <= X.shape[1] + 1 or min(len(idxL), len(idxU)) < 20:
                 continue
 
-            # 4. Central subset
+            # 4. Sous-ensemble central
             Xc = X.iloc[idxC] if hasattr(X, 'iloc') else X[idxC]
             yc = y.iloc[idxC] if hasattr(y, 'iloc') else y[idxC]
 
-            # 5. Linear model on the center
+            # 5. Modèle linéaire sur le centre
             mdl = sm.OLS(yc, sm.add_constant(Xc)).fit()
             res_c = mdl.resid
 
-            # 6. Compute bias-variance metrics
+            # 6. Calcul des métriques biais–variance
             var_c = np.var(res_c)
             bias_c = np.mean(res_c)
             score_vb = var_c + bias_c ** 2
 
-            # 7. Size-balance penalty
+            # 7. Pénalité d'équilibre de tailles
             bal = min(len(idxL), len(idxC), len(idxU)) / max(len(idxL), len(idxC), len(idxU))
             score_final = score_vb * (1 + 0.1 * np.log(1.0 / max(bal, 1e-6)))
 
@@ -429,7 +427,7 @@ def optimise_biais_variance_target(
                 "score": score_final
             })
 
-    # 8. Select the best pair of boundaries
+    # 8. Sélection du meilleur couple de bornes
     if not rows:
         return None
 
@@ -438,15 +436,42 @@ def optimise_biais_variance_target(
 
     return best, df
 
+def summarize_center_target(name, y, mask_center):
+    """
+    Résumé du centre basé sur la distribution de la cible (pas de résidus).
+    """
+    yC = np.asarray(y)[mask_center]
+    if yC.size == 0:
+        return {
+            "Méthode": name,
+            "Taille_centre": 0,
+            "Variance": np.nan,
+            "Écart_type": np.nan,
+            "MAD": np.nan,
+            "Min": np.nan,
+            "Max": np.nan
+        }
+
+    return {
+        "Méthode": name,
+        "Taille_centre": int(yC.size),
+        "Variance": float(np.var(yC)),
+        "Écart_type": float(np.std(yC)),
+        "MAD": float(1.4826 * np.median(np.abs(yC - np.median(yC)))),
+        "Min": float(np.min(yC)),
+        "Max": float(np.max(yC))
+    }
+
+
 
 def blended_predict_full_noleak(X_test, global_model, seg_thr, group_models, alpha):
     """
-    Continuous prediction with alpha-blending across Lower↔Center↔Upper,
-    deciding regions ONLY from the global model prediction
-    (y_hat_global). -> No information leakage.
+    Prédiction continue avec α-blending sur Lower↔Center↔Upper,
+    en décidant des zones UNIQUEMENT à partir de la prédiction
+    du modèle global (ŷ_global). -> Pas de fuite d'information.
     """
     low_thr, up_thr = seg_thr["low_thr"], seg_thr["up_thr"]
-    # 1) Global predictions on X_test
+    # 1) Prédictions globales sur X_test
     Xc_test = sm.add_constant(X_test, has_constant="add")
     y_hat_global = np.asarray(global_model.predict(Xc_test))
 
@@ -459,40 +484,39 @@ def blended_predict_full_noleak(X_test, global_model, seg_thr, group_models, alp
     for i, yg in enumerate(y_hat_global):
         x_i = X_test.iloc[i:i+1]
         try:
-            # 1) Pure Lower region
+            # 1) Zone Lower pure
             if yg < low_thr - alpha:
                 pred = predict_with_model(mdl_L_info["model"], x_i, mdl_L_info["name"])
 
-            # 2) Lower–Center transition
+            # 2) Transition Lower–Center
             elif low_thr - alpha <= yg <= low_thr + alpha:
                 w = (low_thr + alpha - yg) / (2 * alpha)
                 yL = predict_with_model(mdl_L_info["model"], x_i, mdl_L_info["name"])
                 yC = predict_with_model(mdl_C_info["model"], x_i, mdl_C_info["name"])
                 pred = w * yL + (1 - w) * yC
 
-            # 3) Pure Center region
+            # 3) Zone Center pure
             elif low_thr + alpha < yg < up_thr - alpha:
                 pred = predict_with_model(mdl_C_info["model"], x_i, mdl_C_info["name"])
 
-            # 4) Center–Upper transition
+            # 4) Transition Center–Upper
             elif up_thr - alpha <= yg <= up_thr + alpha:
                 w = (up_thr + alpha - yg) / (2 * alpha)
                 yC = predict_with_model(mdl_C_info["model"], x_i, mdl_C_info["name"])
                 yU = predict_with_model(mdl_U_info["model"], x_i, mdl_U_info["name"])
                 pred = w * yC + (1 - w) * yU
 
-            # 5) Pure Upper region
+            # 5) Zone Upper pure
             else:
                 pred = predict_with_model(mdl_U_info["model"], x_i, mdl_U_info["name"])
 
         except Exception as e:
-            print(f"Error on observation {i}: {e}")
+            print(f"Erreur sur observation {i}: {e}")
             pred = np.nan
 
         y_preds.append(pred)
 
     return np.array(y_preds)
-
 def run_pipeline(
     X_train, y_train,
     X_test,  y_test,
@@ -501,16 +525,16 @@ def run_pipeline(
     verbose=True
 ):
     """
-    Full pipeline:
-      - train/test split
-      - global OLS model
-      - segmentation according to A/B/C/D
-      - fit lower/center/upper experts
-      - blended prediction using continuous alpha-blending
-      - returns summary and metrics
+    Pipeline complet :
+      - split train/test
+      - modèle global OLS
+      - segmentation selon A/B/C/D
+      - fit des experts lower/center/upper
+      - prédiction blendée (continuous α-blending)
+      - renvoie résumé + métriques
 
     methode = "A", "B", "C", "D"
-    alpha = width of the transition zones
+    alpha = largeur des zones de transition
     """
 
 
@@ -522,7 +546,7 @@ def run_pipeline(
         print(f"Train: {len(X_train)}, Test: {len(X_test)}\n")
 
     # ==============================
-    # 2. Global naive model (OLS)
+    # 2. Modèle global naïf (OLS)
     # ==============================
     Xc_train = sm.add_constant(X_train, has_constant="add")
     mdl_global = sm.OLS(y_train, Xc_train).fit(cov_type="HC3")
@@ -542,7 +566,7 @@ def run_pipeline(
         
         seg = segmentation_target_quantiles(y_train)
     elif methode == "C":
-        # iterative lower + upper segmentation
+        # itérative gauche + droite
         left  = methode_iterative_retrait_target(X_train, y_train, cote="gauche")
         right = methode_iterative_retrait_target(X_train, y_train, cote="droite")
 
@@ -569,15 +593,13 @@ def run_pipeline(
         }
     else:
         raise ValueError("Méthode inconnue. Choix: 'A','B','C','D'.")
-    alpha = 0.05 * (seg["up_thr"] - seg["low_thr"])  # transition zone = 5% of the global interval
-
-    mdl_huber, y_pred_huber = fit_huber_global(X_train, y_train, X_test)
+    alpha = 0.05 * (seg["up_thr"] - seg["low_thr"])  # zone de transition = 5% de l’intervalle global
 
     \
 
 
     # ==============================
-    # 4. GROUP EXTRACTION
+    # 4. EXTRACTION DES GROUPES
     # ==============================
     idxL, idxC, idxU = seg["idxL"], seg["idxC"], seg["idxU"]
 
@@ -591,14 +613,14 @@ def run_pipeline(
     y_U = y_train.iloc[idxU]
 
     if verbose:
-        print("\n Group sizes:")
+        print("\n Tailles des groupes :")
         print(f"Lower : {len(X_L)} / Center : {len(X_C)} / Upper : {len(X_U)}")
 
 
     # ==============================
-    # 5. TRAIN EXPERTS
+    # 5. TRAIN DES EXPERTS
     # ==============================
-   # GROUP residuals, not all training residuals
+   # Résidus DU GROUPE (pas tous les résidus du train)
     resid_L = resid_global.iloc[idxL].reset_index(drop=True)
     resid_C = resid_global.iloc[idxC].reset_index(drop=True)
     resid_U = resid_global.iloc[idxU].reset_index(drop=True)
@@ -620,7 +642,7 @@ def run_pipeline(
         "Upper": perf_U
     }
 
-    # === IMPORTANT PATCH ===
+    # === PATCH IMPORTANT ===
 
 
     if group_models["Lower"] is None:
@@ -631,23 +653,23 @@ def run_pipeline(
 
 
     # ==============================
-    # 6. PREDICTION
+    # 6. PREDICTION ()
     # ==============================
     y_pred_naive = mdl_global.predict(sm.add_constant(X_test, has_constant="add"))
     y_pred_blend = blended_predict_full_noleak(X_test, mdl_global, seg, group_models, alpha)
 
     # ==============================
-    # 7. METRICS
+    # 7. MÉTRIQUES
     # ==============================
-    df_naive = metrics_table(y_test, y_pred_naive, "Naïf")
+    
     df_blend = metrics_table(y_test, y_pred_blend, "SER")
-    df_huber = metrics_table(y_test, y_pred_huber, "Huber")
+    
 
-    df_all = pd.concat([df_naive, df_blend,df_huber], ignore_index=True)
+    df_all = pd.concat([ df_blend], ignore_index=True)
 
     if verbose:
         print("\n==============================")
-        print(f" Final summary (test set) - méthode : {methode}")
+        print(f" Résumé final (test set) - méthode : {methode}")
         print("==============================")
         print(df_all)
 
@@ -664,5 +686,3 @@ def run_pipeline(
         "y_train": y_train,
         "y_test": y_test
     }
-
-
