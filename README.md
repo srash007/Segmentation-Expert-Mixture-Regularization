@@ -227,7 +227,7 @@ If you use this work, please cite:
 
 **Sarah Elyane Rashiwa**  
 University of Ottawa  
-M.Sc. Computer Science (Applied AI)
+Joint Honours B.Sc. Computer Science and Mathematics
 
 ---
 
