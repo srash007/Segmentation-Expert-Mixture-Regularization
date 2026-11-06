@@ -300,7 +300,7 @@ def split_by_target_thresholds(y, low_thr, up_thr):
     groups[idx_center] = 3
     return groups, idx_lower, idx_center, idx_upper
 
-def segmentation_3conditions_target(y, k_tau=1.5, alpha_tail=0.15):
+def segmentation_mad(y, k_tau=1.5, alpha_tail=0.15):
     """
     Segment the target variable into three regions:
     - center region around the median (MAD-based)
@@ -347,7 +347,7 @@ def segmentation_target_quantiles(y, q_low=0.10, q_up=0.90):
     groups, idxL, idxC, idxU = split_by_target_thresholds(y, low_thr, up_thr)
     return {"low_thr": low_thr, "up_thr": up_thr, "groups": groups, "idxL": idxL, "idxC": idxC, "idxU": idxU}
 
-def methode_iterative_retrait_target(X, y, cote='gauche', pas=50, stop_delta=1e-3):
+def methode_iterative_retrait_target(X, y, cote='left', pas=50, stop_delta=1e-3):
     """
     Iterative trimming segmentation based on the target variable.
 
@@ -360,13 +360,13 @@ def methode_iterative_retrait_target(X, y, cote='gauche', pas=50, stop_delta=1e-
     n = len(y_arr)
     best = None
 
-    if cote == 'gauche':
+    if cote == 'left':
         iterator = range(0, n // 3, pas)
     else:
         iterator = range(0, n // 3, pas)
 
     for i in iterator:
-        if cote == 'gauche':
+        if cote == 'left':
             kept = order[i:]  # Retire les i plus petites valeurs de y
             bound = y_arr[order[i]] if i < len(order) else y_arr.min()
         else:
@@ -394,7 +394,7 @@ def methode_iterative_retrait_target(X, y, cote='gauche', pas=50, stop_delta=1e-
     if not best:
         return None
 
-    if cote == 'gauche':
+    if cote == 'left':
         return {"low_thr": best[3], "impr_points": best[0], "r2": best[1], "mae": best[2]}
     else:
         return {"up_thr": best[3], "impr_points": best[0], "r2": best[1], "mae": best[2]}
@@ -582,7 +582,7 @@ def run_pipeline(
     # 3. SEGMENTATION
     # ==============================
     if method == "A":
-        seg = segmentation_3conditions_target(y_train)
+        seg = segmentation_mad(y_train)
     elif method == "B":
         ql, qu = quantile_bounds
         seg = segmentation_target_quantiles(y_train)
